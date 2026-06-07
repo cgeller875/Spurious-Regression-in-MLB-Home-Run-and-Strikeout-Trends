@@ -1,0 +1,160 @@
+---
+title: "Spurious Regression in MLB Home Run and Strikeout Trends"
+author: "Cole Geller"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE
+)
+```
+
+## Introduction
+
+This project applies the Engle-Granger cointegration framework to two Major League Baseball time series: total league-wide home runs and total league-wide strikeouts. The goal is to show how two nonstationary time series can produce a high \(R^2\) and a statistically significant OLS slope coefficient even when the relationship is ultimately spurious.
+
+The data come from the Lahman Baseball Database, specifically `Teams.csv`. The sample begins in 1962, when both MLB leagues generally used a 162-game schedule, and ends in 2019 to exclude the shortened 2020 season.
+
+## Load Packages and Data
+
+```{r load-data}
+library(tidyverse)
+library(urca)
+
+# Place Teams.csv in a folder named "data" inside the same folder as this Rmd file.
+teams_data <- read.csv("data/Teams.csv", header = TRUE, sep = ",")
+
+mlb_time_series <- teams_data %>%
+  filter(yearID >= 1962, yearID <= 2019) %>%
+  group_by(yearID) %>%
+  summarise(
+    total_hr = sum(HR, na.rm = TRUE),
+    total_k = sum(SO, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+hr_data <- ts(
+  mlb_time_series$total_hr,
+  start = 1962,
+  frequency = 1
+)
+
+k_data <- ts(
+  mlb_time_series$total_k,
+  start = 1962,
+  frequency = 1
+)
+```
+
+## Plot the Time Series
+
+```{r plot-series, fig.width=8, fig.height=7}
+par(mfrow = c(2, 1))
+
+plot(
+  hr_data,
+  type = "l",
+  main = "Total MLB Home Runs",
+  xlab = "Year",
+  ylab = "Home Runs"
+)
+
+plot(
+  k_data,
+  type = "l",
+  main = "Total MLB Strikeouts",
+  xlab = "Year",
+  ylab = "Strikeouts"
+)
+
+par(mfrow = c(1, 1))
+```
+
+Both series appear to trend upward over time, which suggests that they may be nonstationary. This motivates formal unit-root testing before interpreting the OLS regression.
+
+## ADF Tests for Nonstationarity
+
+```{r adf-original-series}
+adf_hr <- ur.df(
+  hr_data,
+  type = "trend",
+  selectlags = "AIC"
+)
+
+adf_k <- ur.df(
+  k_data,
+  type = "trend",
+  selectlags = "AIC"
+)
+
+summary(adf_hr)
+summary(adf_k)
+```
+
+For home runs, the ADF `tau3` statistic is -3.0356. For strikeouts, the ADF `tau3` statistic is -2.0199. The 1% critical value is -4.04.
+
+Because neither test statistic is more negative than -4.04, I fail to reject the null hypothesis of a unit root for either series at the 1% level. Therefore, both total MLB home runs and total MLB strikeouts are treated as nonstationary.
+
+## OLS Regression
+
+```{r ols-regression}
+hr_on_k <- lm(hr_data ~ k_data)
+
+summary(hr_on_k)
+```
+
+The estimated OLS regression is:
+
+\[
+\widehat{HR}_t = -34.9679 + 0.15009K_t
+\]
+
+The regression produces an \(R^2\) of 0.838. The p-value for the strikeout slope coefficient is less than 2e-16. Therefore, the regression has a high \(R^2\) and a highly statistically significant slope coefficient, despite both variables being nonstationary.
+
+This is the type of result that can occur in a spurious regression, so the next step is to test whether the OLS residuals are stationary.
+
+## Engle-Granger Residual Test
+
+```{r residual-adf}
+hr_on_k_residuals <- residuals(hr_on_k)
+
+adf_residuals <- ur.df(
+  hr_on_k_residuals,
+  type = "none",
+  selectlags = "AIC"
+)
+
+summary(adf_residuals)
+```
+
+In the Engle-Granger cointegration test, the null hypothesis is that the regression residuals are nonstationary, meaning that the two series are not cointegrated and the regression is spurious. The alternative hypothesis is that the residuals are stationary, meaning that the series are cointegrated.
+
+The residual ADF test statistic is -2.7291. Because the residuals were estimated from an OLS regression, this statistic must be compared with the Engle-Granger critical value rather than the standard `tau1` critical value printed by `ur.df()`.
+
+The sample contains 58 observations and the cointegrating regression includes two variables. Using the closest available sample size of \(T = 50\) in the Engle-Granger table, the 1% critical value is -4.123.
+
+Because -2.7291 is not more negative than -4.123, I fail to reject the null hypothesis that the regression residuals are nonstationary.
+
+## Baseball Interpretation
+
+This result is interesting because strikeouts and home runs are often linked in modern baseball discussion. One common explanation is that hitters have become more willing to trade contact for power, producing more strikeouts but also more home runs.
+
+However, this analysis does not show that strikeouts and home runs are unrelated. Instead, it shows that the strong OLS relationship between annual league-wide home-run totals and strikeout totals is not a stable cointegrating relationship at the 1% level. In other words, the high \(R^2\) appears to come from both variables trending upward over time, rather than from evidence of a long-run equilibrium relationship between the two totals.
+
+This distinction matters because league-wide totals are affected by many factors besides hitter approach, including the number of teams, the number of games played, expansion, strike-shortened seasons, rule changes, pitching velocity, bullpen usage, player development, and possible changes in the baseball itself. Therefore, the result should not be interpreted as disproving the idea that hitters have changed their approach. It only shows that the relationship between these two annual totals is spurious in the time-series sense.
+
+A more baseball-specific follow-up would use rate statistics such as home runs per plate appearance and strikeouts per plate appearance. Those variables would control for changes in league size and number of games played, making them better suited for studying whether hitter approach has changed over time.
+
+## Conclusion
+
+Total MLB home runs and total MLB strikeouts are not cointegrated at the 1% significance level. Although the OLS regression has a high \(R^2\) and a statistically significant slope coefficient, the Engle-Granger residual test indicates that the residuals are nonstationary. Therefore, the relationship is best interpreted as a spurious correlation rather than evidence of a stable long-run equilibrium relationship.
+
+The broader baseball interpretation is that a strong relationship in annual totals can be misleading. The result does not rule out a real strategic connection between strikeouts and home runs at the player, team, or rate-stat level, but it does show that the aggregate totals alone are not enough to establish that connection.
